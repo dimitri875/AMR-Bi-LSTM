@@ -6,42 +6,56 @@ from .residualBlock import ResidualBlock
 from .attention import Attention
 
 class AMRModel(nn.Module):
-    def __init__(self, num_classes=10):
+    def __init__(self, num_classes=11,
+                 use_attention=True,
+                 use_lstm=True,
+                 use_residual=True,
+                 use_depthwise=True,
+                 bidirectional=True):
         super().__init__()
 
-        # Conv part
-        self.dsconv = DepthPointConv(2, 128)
-        self.resblock = ResidualBlock(128)
-        self.pool = nn.MaxPool1d(2)
+        if use_depthwise:
+            self.conv = DepthPointConv(2, 128)
+        else:
+            self.conv = nn.Conv1d(2, 128, kernel_size=3, padding=1)
 
-        # LSTM
-        self.lstm = nn.LSTM(
-            input_size=128,
-            hidden_size=64,
-            batch_first=True,
-            bidirectional=True
-        )
+        self.use_residual = use_residual
+        if use_residual:
+            self.resblock = ResidualBlock(128)
 
-        # Attention
-        self.attention = Attention(128)  # 64*2 = 128
+        self.use_lstm = use_lstm
+        if use_lstm:
+            self.lstm = nn.LSTM(
+                input_size=128,
+                hidden_size=64,
+                batch_first=True,
+                bidirectional=bidirectional
+            )
+            lstm_out = 64 * (2 if bidirectional else 1)
+        else:
+            lstm_out = 128
 
-        # FC
-        self.fc = nn.Linear(128, num_classes)
+        self.use_attention = use_attention
+        if use_attention:
+            self.attention = Attention(lstm_out)
+
+        self.fc = nn.Linear(lstm_out, num_classes)
 
     def forward(self, x):
-        # x: (batch, 2, 128)
+        x = self.conv(x)
 
-        x = self.dsconv(x)         # (batch, 128, 128)
-        x = self.resblock(x)       # (batch, 128, 128)
-        x = self.pool(x)           # (batch, 128, 64)
+        if self.use_residual:
+            x = self.resblock(x)
 
-        # Prepare for LSTM → (batch, seq_len, features)
-        x = x.permute(0, 2, 1)     # (batch, 64, 128)
+        x = self.pool(x)
+        x = x.permute(0, 2, 1)
 
-        x, _ = self.lstm(x)        # (batch, 64, 128)
+        if self.use_lstm:
+            x, _ = self.lstm(x)
 
-        x = self.attention(x)      # (batch, 128)
+        if self.use_attention:
+            x = self.attention(x)
+        else:
+            x = x.mean(dim=1)
 
-        x = self.fc(x)             # (batch, num_classes)
-
-        return x
+        x = self.fc(x)
